@@ -15,6 +15,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
 from reportlab.lib.units import cm
+from datetime import datetime
+import pytz
 
 # ---------------------- Page & Theme ----------------------
 st.set_page_config(page_title="Ovulab | Ovulation Irregularity Assistant",
@@ -65,7 +67,7 @@ html, body, [class*="css"] {{
 </style>
 """, unsafe_allow_html=True)
 
-# Logo (Style B: soft)
+# Logo (soft, Style B)
 st.markdown(f"""
 <div class="header">
   <div class="brand">
@@ -165,7 +167,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------- Predict Card ----------------------
 st.markdown('<div class="card">', unsafe_allow_html=True)
-st.markdown("### 🔮 Predict & Combine")
+st.markdown("### 🔮 Predict & Build Plan")
 
 go = st.button("Predict Risk & Build Plan")
 if go:
@@ -289,7 +291,7 @@ if go:
         }
         return pd.DataFrame(base[level_text])
 
-    # Build & show
+    # Build & show tables
     level_text = level_to_text(final_level)
 
     st.markdown("### 🍽️ Nutrition — Mechanism-based Targets")
@@ -313,7 +315,7 @@ if go:
                        data=meal_df.to_csv(index=False).encode("utf-8"),
                        file_name=f"ovulab_7day_{level_text.lower()}.csv", mime="text/csv")
 
-    # ---------- PDF (Style C, Portrait) ----------
+    # ---------- PDF (Style C, Portrait, IST timestamp bottom-left with weekday) ----------
     def df_to_table_data(df: pd.DataFrame):
         header = list(df.columns)
         rows = df.values.tolist()
@@ -340,7 +342,7 @@ if go:
         elements.append(Paragraph(f"Risk level: <b>{level_text}</b>", risk_style))
         elements.append(Spacer(1, 10))
 
-        # Tables
+        # Tables builder
         def table_block(title: str, data_df: pd.DataFrame):
             elements.append(Paragraph(title, section_style))
             data = df_to_table_data(data_df)
@@ -359,16 +361,17 @@ if go:
             elements.append(tbl)
             elements.append(Spacer(1, 10))
 
+        # Add sections
         table_block("Nutrition — Mechanism-based Targets", nutri_df)
         table_block("Exercise & Meditation — Prescription", mind_df)
         table_block("7-Day Sample Meal Plan", meal_df)
 
-        # Footer
+        # Footer timestamp (bottom-left, IST, with weekday)
+        ist = pytz.timezone("Asia/Kolkata")
+        now_ist = datetime.now(ist)
+        footer = now_ist.strftime("Ovulab • Generated %a, %d-%b-%Y, %H:%M IST")
         elements.append(Spacer(1, 6))
-        elements.append(Paragraph(
-            "Disclaimer: This report provides general wellness information and is not a substitute for professional medical advice.",
-            styles["Italic"]
-        ))
+        elements.append(Paragraph(footer, styles["Normal"]))
 
         doc.build(elements)
         pdf = buf.getvalue()
@@ -440,4 +443,3 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------- Footer ----------------------
 st.caption("Disclaimer: This app provides general wellness information and is not a substitute for professional medical advice.")
-
