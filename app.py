@@ -18,6 +18,9 @@ from reportlab.lib.units import cm
 from datetime import datetime
 import pytz
 
+# Gemini LLM
+import google.generativeai as genai
+
 # ---------------------- Page & Theme ----------------------
 st.set_page_config(page_title="Ovulab | Ovulation Irregularity Assistant",
                    page_icon="💜", layout="centered")
@@ -104,6 +107,10 @@ except Exception as e:
     st.error(f"Could not load model/scaler: {e}")
     st.stop()
 
+# ---------------------- Gemini LLM Integration ----------------------
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-pro")
+
 # ---------------------- Helpers ----------------------
 def bleeding_volume_map(label: str) -> float:
     return {"Light": 2.0, "Moderate": 5.0, "Heavy": 8.0}.get(label, 5.0)
@@ -121,6 +128,49 @@ def risk_level_3(cycle_length: float, cycle_var: float) -> int:
         return 1
     else:
         return 2
+
+
+def infer_hormone_state(cycle_length: float, cycle_variation: float) -> str:
+    """Infer hormone state labels based on cycle length and variation."""
+    if cycle_length > 35:
+        return "Delayed Ovulation Pattern"
+    if cycle_length < 22:
+        return "Luteal Phase Insufficiency Pattern"
+    if cycle_variation > 7:
+        return "Hormonal Variability Pattern"
+    return "Stable Ovulatory Pattern"
+
+
+hormone_nutrition_map = {
+    "Delayed Ovulation Pattern": {
+        "focus": "Support timely follicle growth and ovulatory signaling with anti-inflammatory and blood-flow boosting nutrients.",
+        "nutrients": ["Omega-3", "Magnesium", "Iron", "B Vitamins", "Antioxidants"],
+        "foods": ["flaxseed", "walnuts", "spinach", "beetroot", "millet roti", "fenugreek", "citrus fruits"]
+    },
+    "Luteal Phase Insufficiency Pattern": {
+        "focus": "Enhance luteal progesterone support and stable glucose with minerals and protein-rich foods.",
+        "nutrients": ["Magnesium", "Zinc", "Vitamin D", "Protein", "Complex Carbs"],
+        "foods": ["paneer", "yogurt", "chicken/tofu", "sweet potato", "brown rice", "pumpkin seeds", "methi"]
+    },
+    "Hormonal Variability Pattern": {
+        "focus": "Stabilize hormone rhythms by lowering inflammation and balancing insulin with fiber and healthy fats.",
+        "nutrients": ["Omega-3", "Fiber", "Magnesium", "Polyphenols", "Vitamin E"],
+        "foods": ["chia seeds", "oats", "green tea", "beans", "almonds", "berries", "broccoli"]
+    },
+    "Stable Ovulatory Pattern": {
+        "focus": "Maintain rhythm with balanced macronutrients, micronutrient support, and steady energy release.",
+        "nutrients": ["Fiber", "Omega-3", "Magnesium", "Protein", "Vitamin D"],
+        "foods": ["millets", "fish/soya", "leafy greens", "lentils", "curd", "fruits", "seeds"]
+    }
+}
+
+micronutrient_map = {
+    "Vitamin D": ["fortified milk", "curd", "egg yolk", "mushrooms", "sun-exposed paneer"],
+    "Folate": ["palak", "methiya", "sprouted moong", "chana dal", "papaya", "oranges"],
+    "Magnesium": ["pumpkin seeds", "almonds", "spinach", "raita", "jowar roti", "banana"],
+    "Zinc": ["paneer", "chickpeas", "flax seeds", "sesame seeds", "peanuts", "oats"]
+}
+
 
 def combine_rule_rf(base_level: int, rf_pred: int) -> int:
     """Policy: if RF predicts irregular (1), upgrade rule level by +1 (cap at 2)."""
@@ -151,6 +201,8 @@ bleed_label = c5.selectbox("Bleeding volume", ["Light", "Moderate", "Heavy"], in
 cycle_lengths = np.array([last1, last2, last3], dtype=float)
 cycle_length_mean = float(np.mean(cycle_lengths))
 cycle_length_std = float(np.std(cycle_lengths, ddof=1))
+hormone_state = infer_hormone_state(cycle_length_mean, cycle_length_std)
+nutrition_data = hormone_nutrition_map.get(hormone_state, {})
 bleeding_volume_score = float(bleeding_volume_map(bleed_label))
 
 st.caption("Computed from your entries:")
@@ -199,6 +251,46 @@ if go:
         """,
         unsafe_allow_html=True
     )
+
+    # Hormone & Nutrition Insights
+    st.markdown(f"### 🧬 Hormone State: {hormone_state}")
+    st.markdown(f"**Nutrition Focus:** {nutrition_data.get('focus', 'N/A')}")
+    st.markdown(f"**Key Nutrients:** {', '.join(nutrition_data.get('nutrients', []))}")
+    st.markdown(f"**Recommended Foods:** {', '.join(nutrition_data.get('foods', []))}")
+
+    # LLM Prompt
+    llm_prompt = f"""
+You are an AI assistant for Ovulab, providing gentle, science-backed guidance for ovulation regularity.
+
+Hormone State: {hormone_state}
+
+Risk Level: {level_to_text(final_level)}
+
+Nutrition Focus: {nutrition_data.get('focus', 'N/A')}
+
+Key Nutrients: {', '.join(nutrition_data.get('nutrients', []))}
+
+Recommended Foods: {', '.join(nutrition_data.get('foods', []))}
+
+Micronutrient Sources: {str(micronutrient_map)}
+
+Instructions:
+- Explain the hormone state and nutrition focus simply and clearly.
+- Provide lifestyle and routine recommendations based on the above.
+- Suggest a 3-day Indian meal plan incorporating the recommended foods and nutrients.
+- Do not change or add to the recommendations; stick to the provided data.
+- Keep all advice safe, general, and non-diagnostic.
+
+Generate a response in a friendly, supportive tone.
+"""
+
+    # Call Gemini API
+    response = model.generate_content(llm_prompt)
+    llm_response = response.text
+
+    # Display Personalized Plan
+    st.markdown("### 🤖 Personalized Plan")
+    st.write(llm_response)
 
     # ---------- Data tables (no API) ----------
     def build_nutrition_df(level_text: str) -> pd.DataFrame:
@@ -440,6 +532,9 @@ if file is not None:
         st.error(f"Could not evaluate: {repr(e)}")
 
 st.markdown('</div>', unsafe_allow_html=True)
+
+# ---------------------- Safety Disclaimer ----------------------
+st.caption("This is general guidance and not a medical diagnosis.")
 
 # ---------------------- Footer ----------------------
 st.caption("Disclaimer: This app provides general wellness information and is not a substitute for professional medical advice.")
