@@ -1,211 +1,159 @@
-# app.py — Ovulab (Final UX + ML + Hybrid System)
+# app.py — Ovulab (LLM Weekly Plan + PDF Export)
 
-import os
-import numpy as np
-import pandas as pd
-import joblib
 import streamlit as st
-import google.generativeai as genai
-from datetime import date
+import requests
+import numpy as np
+import io
+from datetime import datetime
 
-# ---------------------- PAGE CONFIG ----------------------
-st.set_page_config(page_title="Ovulab", page_icon="💜", layout="centered")
+# PDF
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
-# ---------------------- UI STYLES ----------------------
-st.markdown("""
-<style>
-body {background: linear-gradient(135deg, #F7F5FD, #EEE9FA);}
+# ---------------------- PAGE ----------------------
+st.set_page_config(page_title="Ovulab LLM", page_icon="💜", layout="centered")
 
-.header {
-    background: linear-gradient(135deg, #8C73C9, #B6A5E8);
-    color: white;
-    padding: 22px;
-    border-radius: 18px;
-    margin-bottom: 20px;
-    box-shadow: 0px 8px 20px rgba(140,115,201,0.2);
-}
+# ---------------------- MEMORY ----------------------
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-.card {
-    background: white;
-    border-radius: 18px;
-    padding: 18px;
-    margin: 12px 0;
-    border: 1px solid #E8E2F6;
-    box-shadow: 0px 6px 18px rgba(140,115,201,0.08);
-    transition: all 0.3s ease;
-}
-.card:hover {
-    transform: translateY(-5px);
-}
+# ---------------------- UI ----------------------
+st.title("💜 Ovulab — LLM Weekly Planner")
 
-.card-title {
-    font-size: 17px;
-    font-weight: 700;
-    color: #8C73C9;
-}
+st.caption("Cycle length = days between start of one period and next")
 
-.card-content {
-    font-size: 14px;
-    color: #3F3A52;
-    line-height: 1.6;
-}
-</style>
-""", unsafe_allow_html=True)
+# ---------------------- INPUT ----------------------
+l1 = st.number_input("Last cycle length", 10, 90, 28)
+l2 = st.number_input("Previous cycle length", 10, 90, 29)
+l3 = st.number_input("Earlier cycle length", 10, 90, 27)
 
-# ---------------------- HEADER ----------------------
-st.markdown("""
-<div class="header">
-<h2>💜 Ovulab</h2>
-<p>Cycle-aware Nutrition & Hormonal Balance</p>
-</div>
-""", unsafe_allow_html=True)
+bleed = st.number_input("Bleeding duration (days)", 1.0, 12.0, 5.0)
 
-# ---------------------- CARD FUNCTION ----------------------
-def show_card(title, content):
-    st.markdown(f"""
-    <div class="card">
-        <div class="card-title">{title}</div>
-        <div class="card-content">{content}</div>
-    </div>
-    """, unsafe_allow_html=True)
+diet = st.selectbox("Diet preference", ["Vegetarian", "Non-vegetarian"])
 
-# ---------------------- LOAD MODEL ----------------------
-@st.cache_resource
-def load_assets():
-    return joblib.load("ovulation_rf_model.pkl"), joblib.load("ovulation_scaler.pkl")
+# ---------------------- LLM FUNCTION ----------------------
+def ask_llm(prompt):
+    try:
+        res = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "mistral", "prompt": prompt, "stream": False}
+        )
+        return res.json()["response"]
+    except:
+        return "⚠️ LLM not running. Run: ollama run mistral"
 
-rf, scaler = load_assets()
+# ---------------------- PDF FUNCTION ----------------------
+def generate_pdf(text):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer)
+    styles = getSampleStyleSheet()
 
-# ---------------------- HELPERS ----------------------
-def bleeding_volume_map(label):
-    return {"Light":2, "Moderate":5, "Heavy":8}[label]
+    content = []
 
-def risk_level_3(cycle_length, var):
-    if 26 <= cycle_length <= 32 and var < 3:
-        return 0
-    elif (22 <= cycle_length <= 25 or 33 <= cycle_length <= 35) or (3 <= var <= 7):
-        return 1
-    return 2
+    for line in text.split("\n"):
+        if line.strip() == "":
+            continue
+        content.append(Paragraph(line, styles["Normal"]))
+        content.append(Spacer(1, 10))
 
-def combine_rule_rf(rule, rf_pred):
-    return min(rule + rf_pred, 2)
+    doc.build(content)
+    buffer.seek(0)
+    return buffer
 
-def level_to_text(level):
-    return ["LOW","MEDIUM","HIGH"][level]
+# ---------------------- BUTTON ----------------------
+if st.button("Analyze"):
 
-def infer_hormone_state(cycle_length, variation):
-    if cycle_length > 35:
-        return "Delayed Ovulation Pattern"
-    elif cycle_length < 22:
-        return "Luteal Phase Insufficiency Pattern"
-    elif variation > 7:
-        return "Hormonal Variability Pattern"
-    return "Stable Ovulatory Pattern"
+    avg = np.mean([l1, l2, l3])
+    std = np.std([l1, l2, l3])
 
-# ---------------------- INPUT MODE ----------------------
-mode = st.radio("Choose input method:", ["Enter Cycle Lengths", "Enter Dates (Auto Calculate)"])
+    prompt = f"""
+You are Ovulab, an AI menstrual health assistant trained in physiology and nutritional biochemistry.
 
-# ---------------------- INPUTS ----------------------
-if mode == "Enter Cycle Lengths":
-    st.caption("Cycle length = days between the start of one period and the next")
+User Data:
+Cycle lengths: {l1}, {l2}, {l3}
+Average: {avg:.1f}
+Variation: {std:.2f}
+Bleeding days: {bleed}
+Diet: {diet}
 
-    l1 = st.number_input("Last cycle length", 10, 90, 28, help="Days between last two periods")
-    l2 = st.number_input("Previous cycle length", 10, 90, 29)
-    l3 = st.number_input("Earlier cycle length", 10, 90, 27)
+Tasks:
 
-else:
-    st.caption("Select first day of your last 3 periods")
+1. Classify risk (LOW / MEDIUM / HIGH)
+2. Infer physiological pattern
+3. Generate structured output:
 
-    d1 = st.date_input("Most recent period start", value=date(2024,1,1))
-    d2 = st.date_input("Previous period start", value=date(2023,12,1))
-    d3 = st.date_input("Earlier period start", value=date(2023,11,1))
+---
 
-    l1 = abs((d1 - d2).days)
-    l2 = abs((d2 - d3).days)
-    l3 = l2  # fallback
+### 🧬 Cycle Analysis
+...
 
-    st.success(f"Calculated cycle lengths: {l1}, {l2}, {l3}")
+### 🧠 Insight
+...
 
-# Bleeding input
-bleed = st.number_input(
-    "Bleeding duration (days)",
-    1.0, 12.0, 5.0,
-    help="Number of days your period lasts (not cycle length)"
-)
+### 🥗 Nutrition Strategy
+...
 
-volume = st.selectbox("Bleeding volume", ["Light","Moderate","Heavy"])
+### 🍽️ Food Recommendations
+...
 
-# ---------------------- PREDICT ----------------------
-if st.button("Predict"):
+### 🧘 Lifestyle Plan
+...
 
-    lengths = np.array([l1,l2,l3])
-    mean = np.mean(lengths)
-    var = np.std(lengths, ddof=1)
+### 🗓️ Weekly Meal Plan (7 Days)
 
-    input_df = pd.DataFrame([{
-        "cycle_length": mean,
-        "cycle_length_variation": var,
-        "avg_bleeding_days": bleed,
-        "bleeding_volume_score": bleeding_volume_map(volume)
-    }])
+Each day MUST include:
+Breakfast:
+Lunch:
+Dinner:
+Snack:
 
-    X = scaler.transform(input_df)
-    rf_pred = int(rf.predict(X)[0])
+Rules:
+- Each day must be different
+- Avoid repetition
+- Use Indian foods
+- Respect diet preference
 
-    rule = risk_level_3(mean, var)
-    final = combine_rule_rf(rule, rf_pred)
+### 🔁 Monthly Guidance
+Explain how to rotate this weekly plan over 4 weeks
 
-    hormone = infer_hormone_state(mean, var)
+---
 
-    show_card("🧬 Hormone Insight", hormone)
-
-    show_card("📊 Cycle Metrics",
-              f"Mean: {mean:.1f} days | Variation: {var:.2f}")
-
-    show_card("⚠️ Risk Level", level_to_text(final))
-
-    # ---------------------- PLAN ----------------------
-    plan = f"""
-Your cycle pattern suggests **{hormone}**.
-
-### Key actions:
-• Maintain regular sleep cycle  
-• Balanced meals with protein  
-• Daily movement (30–45 min)  
-• Reduce refined sugar  
-
-### Sample Plan:
-Day 1: Dal + roti + sabzi  
-Day 2: Millet bowl + paneer  
-Day 3: Rice + chole  
+Keep tone simple and safe.
+End with disclaimer.
 """
 
-    show_card("📋 Core Plan", plan)
+    result = ask_llm(prompt)
 
-    # ---------------------- GEMINI ----------------------
-    api_key = os.getenv("GEMINI_API_KEY")
+    # Display
+    st.markdown("### 🤖 AI Weekly Plan")
+    st.markdown(result)
 
-    if api_key:
-        try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
+    # Save to memory
+    st.session_state.history.append({
+        "time": datetime.now().strftime("%d-%m-%Y %H:%M"),
+        "cycles": [l1, l2, l3],
+        "bleeding": bleed,
+        "result": result
+    })
 
-            prompt = f"""
-            Hormone: {hormone}
-            Risk: {level_to_text(final)}
+    # PDF export
+    pdf = generate_pdf(result)
 
-            Expand into lifestyle + meal plan.
-            """
+    st.download_button(
+        "📄 Download Weekly Plan PDF",
+        pdf,
+        "ovulab_weekly_plan.pdf",
+        "application/pdf"
+    )
 
-            response = model.generate_content(prompt)
+# ---------------------- HISTORY ----------------------
+st.markdown("### 🧠 Past Records")
 
-            show_card("🤖 AI Plan", response.text)
-
-        except:
-            st.warning("AI unavailable")
-
-    else:
-        st.info("Add GEMINI_API_KEY for AI plan")
+for i, record in enumerate(st.session_state.history[::-1]):
+    with st.expander(f"Record {i+1} ({record['time']})"):
+        st.write("Cycles:", record["cycles"])
+        st.write("Bleeding:", record["bleeding"])
+        st.write(record["result"])
 
 # ---------------------- FOOTER ----------------------
 st.caption("This is general guidance and not a medical diagnosis.")
